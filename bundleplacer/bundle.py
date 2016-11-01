@@ -232,6 +232,9 @@ class Bundle:
     def machines(self):
         return self._bundle.get('machines', {})
 
+    def add_machine(self, md, idx):
+        self._bundle[idx] = md
+
     @property
     def series(self):
         return self._bundle.get('series', DEFAULT_SERIES)

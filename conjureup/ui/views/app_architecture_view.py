@@ -6,7 +6,9 @@ import logging
 import q
 from urwid import Columns, Filler, Frame, Pile, Text, WidgetWrap
 
-from conjureup.ui.widgets.machines_list import MachinesList
+from conjureup.app_config import app
+from conjureup.ui.widgets.juju_machines_list import JujuMachinesList
+from conjureup.ui.views.machine_pin_view import MachinePinView
 
 from ubuntui.ev import EventLoop
 from ubuntui.utils import Color, Padding
@@ -19,9 +21,18 @@ log = logging.getLogger('conjure')
 class AppArchitectureView(WidgetWrap):
 
     def __init__(self, application, controller):
+        """
+        application: a Service instance representing a juju application
+
+        controller: a DeployGUIController instance
+        """
         self.controller = controller
         self.application = application
-        self._assignments = []
+
+        self.header = "Architecture"
+        self._placements = []
+
+        self._machines = app.metadata_controller.bundle.machines.copy()
 
         self.alarm = None
         self.widgets = self.build_widgets()
@@ -57,12 +68,16 @@ class AppArchitectureView(WidgetWrap):
             "" if self.application.num_units == 1 else "s",
             self.application.service_name))]
 
-        self.machines_list = MachinesList(self.application,
-                                          self.do_select,
-                                          self.do_unselect,
-                                          self.controller,
-                                          show_only_ready=True,
-                                          show_filter_box=True)
+        controller_is_maas = self.controller.cloud_type == 'maas'
+        self.machines_list = JujuMachinesList(self.application,
+                                              self._machines,
+                                              self.do_select,
+                                              self.do_unselect,
+                                              self.add_machine,
+                                              self.remove_machine,
+                                              self,
+                                              show_filter_box=True,
+                                              show_pins=controller_is_maas)
         ws.append(self.machines_list)
 
         self.pile = Pile(ws)
@@ -97,7 +112,7 @@ class AppArchitectureView(WidgetWrap):
         return footer
 
     def update_now(self, *args):
-        if len(self._assignments) == self.application.num_units:
+        if len(self._placements) == self.application.num_units:
             self.machines_list.all_assigned = True
         else:
             self.machines_list.all_assigned = False
@@ -108,14 +123,53 @@ class AppArchitectureView(WidgetWrap):
         self.alarm = EventLoop.set_alarm_in(1, self.update)
 
     def do_select(self, machine, assignment_type):
-        self._assignments.append((machine,
-                                  assignment_type))
+        self._placements.append((machine,
+                                 assignment_type))
         self.update_now()
 
     def do_unselect(self, machine):
-        self._assignments = [(m, a) for (m, a) in self._assignments
-                             if m != machine]
+        self._placements = [(m, at) for (m, at) in self._placements
+                            if m != machine]
         self.update_now()
+
+    def get_all_placements(self, machine_id):
+        """merge committed placements of other apps with temporary placements
+        of this app
+        """
+        all_placements = [(a, at) for (a, at)
+                          in self.controller.placements[machine_id]
+                          if a != self.application]
+        return all_placements + self._placements
+
+    def add_machine(self):
+        md = dict(series=app.metadata_controller.bundle.series)
+        self._machines[str(len(self._machines))] = md
+
+    def remove_machine(self):
+        raise Exception("TODO")
+
+    def get_pin(self, juju_machine_id):
+        q.q(juju_machine_id)
+        return 1
+
+    def show_pin_chooser(self, juju_machine_id):
+        app.ui.set_header("Pin Machine {}".format(juju_machine_id))
+        mpv = MachinePinView(juju_machine_id, self)
+        app.ui.set_body(mpv)
+
+    def handle_sub_view_done(self):
+        app.ui.set_header(self.header)
+        self.update_now()
+        app.ui.set_body(self)
+
+    def set_pin(self, juju_machine_id, maas_machine_id):
+        q.q(juju_machine_id, maas_machine_id)
+
+    def unset_pin(self, juju_machine_id):
+        q.q(juju_machine_id)
+
+    def commit_machine_pin(self):
+        q.q("commit")
 
     def do_cancel(self, sender):
         self.controller.handle_sub_view_done()
@@ -123,8 +177,9 @@ class AppArchitectureView(WidgetWrap):
             EventLoop.remove_alarm(self.alarm)
 
     def do_commit(self, sender):
+        "Commit changes to placements and constraints"
         self.controller.clear_placements(self.application)
-        for machine, atype in self._assignments:
+        for machine, atype in self._placements:
             self.controller.add_placement(self.application, machine, atype)
 
         self.controller.handle_sub_view_done()

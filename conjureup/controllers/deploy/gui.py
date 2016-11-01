@@ -5,12 +5,13 @@ from functools import partial
 from operator import attrgetter
 from subprocess import PIPE
 
-from bundleplacer.assignmenttype import atype_to_label
+from bundleplacer.assignmenttype import atype_to_label, AssignmentType
 
 from conjureup import async, controllers, juju, utils
 from conjureup.api.models import model_info
 from conjureup.app_config import app
 from conjureup.telemetry import track_event, track_exception, track_screen
+from conjureup.juju import get_controller_info
 from conjureup.ui.views.app_architecture_view import AppArchitectureView
 from conjureup.ui.views.applicationconfigure import ApplicationConfigureView
 from conjureup.ui.views.applicationlist import ApplicationListView
@@ -23,6 +24,8 @@ class DeployController:
         self.applications = []
         self.placements = defaultdict(list)
         self.machine_id_map = {}
+        c_info = get_controller_info(app.current_controller)
+        self.cloud_type = c_info['details']['cloud']
 
     def _handle_exception(self, tag, exc):
         track_exception(exc.args[0])
@@ -85,9 +88,20 @@ class DeployController:
         app.ui.set_body(cv)
 
     def do_placement(self, application, sender):
+        bundle = app.metadata_controller.bundle
+        if len(bundle.machines) == 0:
+            midx = 0
+            for application in bundle.services:
+                for n in range(application.num_units):
+                    bundle.add_machine(dict(series=bundle.series),
+                                       midx)
+                    self.add_placement(application, midx,
+                                       AssignmentType.DEFAULT)
+                    midx += 1
+
         av = AppArchitectureView(application,
                                  self)
-        app.ui.set_header("Architecture")
+        app.ui.set_header(av.header)
         app.ui.set_body(av)
 
     def add_placement(self, application, machine, atype):
@@ -212,9 +226,9 @@ class DeployController:
             return self._handle_exception('E003', e)
 
         #  TODO - maybe don't do this here for MAAS?
-        juju.add_machines(
-            list(app.metadata_controller.bundle.machines.values()),
-            exc_cb=partial(self._handle_exception, "ED"))
+        # juju.add_machines(
+        #     list(app.metadata_controller.bundle.machines.values()),
+        #     exc_cb=partial(self._handle_exception, "ED"))
 
         self.applications = sorted(app.metadata_controller.bundle.services,
                                    key=attrgetter('service_name'))
